@@ -1,0 +1,20 @@
+services:
+  scout:
+    build: .
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./app:/app/app
+      - ./tests:/app/tests
+    restart: unless-stopped
+
+  login:
+    profiles: ["login"]
+    build: .
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./app:/app/app
+    stdin_open: true
+    tty: true
+    command: python -m app.login

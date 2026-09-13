@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: tg-canal-scout
+    runtime: docker
+    plan: starter
+    region: oregon
+    healthCheckPath: /health
+    dockerfilePath: ./Dockerfile
+    disk:
+      name: scout-data
+      mountPath: /app/data
+      sizeGB: 1
+    envVars:
+      - key: TELEGRAM_SESSION_PATH
+        value: data/telegram.session
+      - key: PYTHONUNBUFFERED
+        value: "1"
