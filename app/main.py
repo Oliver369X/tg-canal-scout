@@ -12,6 +12,7 @@ from aiohttp import web
 
 from app.bot import build_application, resume_saved_jobs, scout
 from app.config import get_settings
+from app.report import deep_stats, list_saved
 
 logging.basicConfig(
     level=logging.INFO,
@@ -123,12 +124,27 @@ async def _login_page(request: web.Request) -> web.Response:
     )
 
 
+def _check_token(request: web.Request) -> None:
+    token = _login_token()
+    if not token or request.match_info.get("token") != token:
+        raise web.HTTPNotFound()
+
+
+async def _report(request: web.Request) -> web.Response:
+    _check_token(request)
+    ficha_raw = request.query.get("ficha")
+    if ficha_raw:
+        return web.json_response(deep_stats(int(ficha_raw)))
+    return web.json_response(list_saved())
+
+
 async def _start_http() -> web.AppRunner:
     port = int(os.environ.get("PORT", "10000"))
     app = web.Application()
     app.router.add_get("/", _health)
     app.router.add_get("/health", _health)
     app.router.add_get("/login/{token}", _login_page)
+    app.router.add_get("/report/{token}", _report)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", port).start()
