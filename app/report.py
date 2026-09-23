@@ -153,7 +153,7 @@ def deep_stats(ficha_id: int) -> dict[str, Any]:
             GROUP BY k LIMIT ?
             """
         )
-        generic = ("", "video.mp4", "photo.jpg", "document.mp4", "animation.gif", "sticker.webp")
+        generic = ("video.mp4", "photo.jpg", "document.mp4", "animation.gif", "sticker.webp")
         placeholders = ",".join("?" * len(generic))
         dup_names = _rows(
             c,
@@ -191,7 +191,7 @@ def deep_stats(ficha_id: int) -> dict[str, Any]:
             WHERE lower(name) IN ({placeholders})
             GROUP BY k ORDER BY n DESC
             """,
-            tuple(g for g in generic if g),
+            tuple(generic),
         )
         dup_files = _rows(
             c,
