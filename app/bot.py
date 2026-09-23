@@ -23,6 +23,7 @@ from app.human_read import skewed_delay
 from app.links import check_urls
 from app.pace import WAVE_REST, WAVE_TAKE, parse_amount, pace_for_amount
 from app.scout import ScoutClient, parse_peer
+from app.stats_view import build_stats
 from app.store import Store
 
 store = Store()
@@ -400,6 +401,10 @@ def keyboard(ficha_id: int, summary: dict | None = None) -> InlineKeyboardMarkup
             InlineKeyboardButton("Más viejos", callback_data=f"V:{i}"),
             InlineKeyboardButton("Reenvíos", callback_data=f"F:{i}"),
         ],
+        [
+            InlineKeyboardButton("Estadística", callback_data=f"E:{i}"),
+            InlineKeyboardButton("Archivos", callback_data=f"A:{i}"),
+        ],
     ]
     if summary and summary.get("can_continue"):
         rows.extend(_amount_rows(i, first=False))
@@ -423,7 +428,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Te muestro el canal y elegís cuánto leer: 100, 300, 1000 o todo (lento).\n"
         "Los botones agregan mensajes: lo ya visto se queda para scrollear.\n"
         "Todo usa pausas largas; baja el riesgo de flood, no lo elimina.\n"
-        "Un canal a la vez. /status te dice si sigue vivo o ya terminó.\n\n"
+        "Un canal a la vez. /status te dice si sigue vivo o ya terminó.\n"
+        "/stats lee la última ficha guardada: duración, peso, álbumes y sello por archivo.\n\n"
         + extra
     )
 
@@ -455,7 +461,22 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             f"Última ficha: {last.get('title')} · {s.get('sampled', 0)} posts · {fin}"
         )
     lines.append("Cola: un canal a la vez (misma cuenta). No paralelo.")
+    lines.append("/stats abre la estadística de la última ficha.")
     await update.message.reply_text("\n".join(lines))
+
+
+async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _gate(update):
+        return
+    ficha = store.latest_ficha(update.effective_user.id)
+    if not ficha or not ficha.get("items"):
+        await update.message.reply_text("Todavía no hay una ficha guardada. Mandá un canal primero.")
+        return
+    summary = ficha.get("summary") or {}
+    await update.message.reply_text(
+        f"Estadística de {ficha.get('title') or ficha.get('peer')} · {len(ficha['items'])} posts en la base."
+    )
+    await _send_parts(update.message, _stat_parts(ficha, "all"), int(ficha["id"]), summary)
 
 
 def _peer_from_update(update: Update) -> str | None:
@@ -514,6 +535,27 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         reply_markup=choice_keyboard(ficha_id),
         disable_web_page_preview=True,
     )
+
+
+async def _send_parts(message, parts: list[str], ficha_id: int, summary: dict) -> None:
+    if not parts:
+        return
+    for i, part in enumerate(parts):
+        last = i == len(parts) - 1
+        await message.reply_text(
+            part[:3900],
+            disable_web_page_preview=True,
+            reply_markup=keyboard(ficha_id, summary) if last else None,
+        )
+
+
+def _stat_parts(ficha: dict, section: str) -> list[str]:
+    built = build_stats(ficha["items"], ficha.get("peer") or "", ficha.get("title") or "")
+    if section == "files":
+        return built["files"]
+    if section == "all":
+        return built["overview"] + built["files"]
+    return built["overview"]
 
 
 def _item_link(peer: str, msg_id: int) -> str:
@@ -946,6 +988,13 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             _busy.discard(ficha_id)
         return
 
+    if kind in {"E", "A"}:
+        await q.answer()
+        section = "files" if kind == "A" else "overview"
+        await q.message.reply_text("Leo la base guardada. No vuelvo a escanear.")
+        await _send_parts(q.message, _stat_parts(ficha, section), ficha_id, summary)
+        return
+
     if kind == "U":
         await q.answer()
         urls: list[str] = []
@@ -1018,6 +1067,7 @@ def build_application() -> Application:
     app = Application.builder().token(settings.telegram_bot_token).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, on_message))
     app.add_error_handler(on_error)

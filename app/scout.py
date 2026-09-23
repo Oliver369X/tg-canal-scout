@@ -129,9 +129,10 @@ def item_from_message(msg) -> dict[str, Any]:
     name = getattr(f, "name", None) if f else None
     w = getattr(f, "width", None) if f else None
     h = getattr(f, "height", None) if f else None
+    fid = getattr(f, "id", None) if f else None
     replies = getattr(getattr(msg, "replies", None), "replies", None)
     text = msg.message or ""
-    return {
+    row = {
         "id": msg.id,
         "date": _iso(msg.date),
         "media": media,
@@ -153,6 +154,9 @@ def item_from_message(msg) -> dict[str, Any]:
         "edited": bool(getattr(msg, "edit_date", None)),
         "author": getattr(msg, "post_author", None),
     }
+    if fid:
+        row["fid"] = fid
+    return row
 
 
 class ScoutClient:
