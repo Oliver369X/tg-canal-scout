@@ -6,7 +6,7 @@ import random
 import time
 from datetime import datetime, timezone
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest
 from telegram.ext import (
     Application,
@@ -431,8 +431,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Los botones agregan mensajes: lo ya visto se queda para scrollear.\n"
         "Todo usa pausas largas; baja el riesgo de flood, no lo elimina.\n"
         "Un canal a la vez. /status te dice si sigue vivo o ya terminó.\n"
-        "/stats lee duración, peso total y formatos. /clasificar ordena vistos, compartidos y repetidos.\n"
-        "/pedir vistos 30 · /pedir menos 20 · /pedir duracion 10 40 · /pedir etiqueta nombre · /mas\n\n"
+        "/help lista los comandos.\n\n"
         + extra
     )
 
@@ -464,8 +463,40 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             f"Última ficha: {last.get('title')} · {s.get('sampled', 0)} posts · {fin}"
         )
     lines.append("Cola: un canal a la vez (misma cuenta). No paralelo.")
-    lines.append("/stats estadística · /clasificar listas ordenadas.")
+    lines.append("/help lista los comandos.")
     await update.message.reply_text("\n".join(lines))
+
+
+_HELP = """Comandos
+
+/start — cómo mandar un canal
+/help — esta lista
+/status — si el escaneo sigue vivo y la última ficha
+
+Después de pegar un canal, los botones leen la base:
+Ficha, Tipos, Videos largos, Pesados, Más vistos, Links, Más viejos, Reenvíos, Estadística, Archivos, Clasificar.
+
+/stats — peso total, formatos, duración, álbumes
+/clasificar — vistos, compartidos, comentarios, reacciones, cortos, largos, repetidos
+
+/pedir vistos 30 — los 30 con más vistas
+/pedir menos 20 — los 20 con menos vistas
+/pedir compartidos 15
+/pedir comentarios 15
+/pedir reacciones 15
+/pedir duracion 10 40 — videos de 10 a 40 minutos
+/pedir duracion 10 40 25 — ese rango, 25 resultados
+/pedir etiquetas — hashtags y cuántas veces salen
+/pedir etiqueta nombre 20 — posts con esa etiqueta
+/mas — la página siguiente (hasta 40 por página)
+
+No vuelve a escanear el canal. Lee lo ya guardado."""
+
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _gate(update):
+        return
+    await update.message.reply_text(_HELP)
 
 
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1204,10 +1235,25 @@ async def resume_saved_jobs(app: Application) -> None:
         log.info("retomé job ficha=%s", fid)
 
 
+async def _set_commands(app: Application) -> None:
+    await app.bot.set_my_commands(
+        [
+            BotCommand("start", "Cómo mandar un canal"),
+            BotCommand("help", "Lista de comandos"),
+            BotCommand("status", "Si el escaneo sigue vivo"),
+            BotCommand("stats", "Peso, formatos y duración"),
+            BotCommand("clasificar", "Vistos, compartidos y repetidos"),
+            BotCommand("pedir", "Pedir más, menos vistos, minutos o etiqueta"),
+            BotCommand("mas", "Página siguiente de la última lista"),
+        ]
+    )
+
+
 def build_application() -> Application:
     settings = get_settings()
-    app = Application.builder().token(settings.telegram_bot_token).build()
+    app = Application.builder().token(settings.telegram_bot_token).post_init(_set_commands).build()
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("clasificar", cmd_classify))
