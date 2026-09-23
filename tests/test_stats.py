@@ -1,6 +1,6 @@
 import unittest
 
-from app.stats_view import build_stats
+from app.stats_view import build_classifiers, build_stats
 
 
 class StatsViewTest(unittest.TestCase):
@@ -51,3 +51,8 @@ class StatsViewTest(unittest.TestCase):
         self.assertIn("×2", text)
         self.assertIn("https://t.me/canal/10", text)
         self.assertIn("1280×720", text)
+        self.assertIn("Peso total del canal:", text)
+        classes = "\n".join(build_classifiers(items, "@canal", "Canal"))
+        self.assertIn("Peso total del canal:", classes)
+        self.assertIn("Videos repetidos", classes)
+        self.assertIn("×2", classes)

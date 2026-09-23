@@ -188,7 +188,8 @@ def build_stats(items: list[dict[str, Any]], peer: str, title: str = "") -> dict
         f"Posts: {_num(n)}",
         f"En álbum: {_num(in_album)} ({_num(len(albums))} álbumes) · sueltos: {_num(n - in_album)}",
         f"Editados: {_num(edited)}",
-        f"Video declarado: {_mins(video_seconds)} · peso declarado: {_mb(size_total)}",
+        f"Peso total del canal: {_mb(size_total)} (dato del archivo, no bajado)",
+        f"Video declarado: {_mins(video_seconds)}",
         f"Con nombre de archivo: {_num(with_name)} · con id de archivo: {_num(with_fid)}",
         "",
         "Tipo",
@@ -254,3 +255,91 @@ def build_stats(items: list[dict[str, Any]], peer: str, title: str = "") -> dict
         files.append("· no vi grupos repetidos con peso y duración")
 
     return {"overview": _chunks(overview), "files": _chunks(files)}
+
+
+def _hit(item: dict[str, Any], peer: str, label: str) -> str:
+    return f"· {label} · {_stamp(item)} — {_link(peer, int(item['id']))}"
+
+
+def _top(items: list[dict[str, Any]], key: str, limit: int = 8) -> list[dict[str, Any]]:
+    picked = [i for i in items if int(i.get(key) or 0) > 0]
+    picked.sort(key=lambda i: int(i.get(key) or 0), reverse=True)
+    return picked[:limit]
+
+
+def build_classifiers(items: list[dict[str, Any]], peer: str, title: str = "") -> list[str]:
+    head = title or peer or "canal"
+    views = sorted(int(i["views"]) for i in items if i.get("views"))
+    median = views[len(views) // 2] if views else 0
+    size_total = sum(int(i.get("size") or 0) for i in items)
+    lines = [
+        f"Clasificadores — {head}",
+        "Reglas sobre la base guardada. No bajé archivos.",
+        f"Peso total del canal: {_mb(size_total)}",
+        f"Posts: {_num(len(items))} · vistas mediana {_num(median)}",
+        "",
+        "Más vistos",
+    ]
+    seen = _top(items, "views")
+    lines += [_hit(i, peer, f"{_num(i.get('views'))} vistas") for i in seen] or ["· sin vistas"]
+    lines += ["", "Más compartidos"]
+    shared = _top(items, "forwards")
+    lines += [_hit(i, peer, f"{_num(i.get('forwards'))} veces") for i in shared] or ["· nadie los compartió"]
+    lines += ["", "Más comentarios"]
+    comments = _top(items, "replies")
+    lines += [_hit(i, peer, f"{_num(i.get('replies'))} respuestas") for i in comments] or ["· sin comentarios"]
+    lines += ["", "Más reacciones"]
+    reacted = _top(items, "reactions")
+    lines += [_hit(i, peer, f"{_num(i.get('reactions'))} reacciones") for i in reacted] or ["· sin reacciones"]
+
+    shorts = [
+        i
+        for i in items
+        if i.get("media") == "video"
+        and 0 < int(i.get("duration") or 0) < 180
+        and int(i.get("views") or 0) > 0
+    ]
+    shorts.sort(key=lambda i: int(i.get("views") or 0), reverse=True)
+    lines += ["", "Videos cortos (<3 min) con más vistas"]
+    lines += [_hit(i, peer, f"{_num(i.get('views'))} vistas · {_mins(i.get('duration'))}") for i in shorts[:8]] or [
+        "· ninguno"
+    ]
+
+    heavy = [
+        i
+        for i in items
+        if i.get("media") == "video"
+        and int(i.get("duration") or 0) >= 600
+        and int(i.get("size") or 0) >= 100 * 1024 * 1024
+    ]
+    heavy.sort(key=lambda i: int(i.get("size") or 0), reverse=True)
+    lines += ["", "Largos y pesados (≥10 min y ≥100 MB)"]
+    lines += [_hit(i, peer, f"{_mins(i.get('duration'))} · {_mb(i.get('size'))}") for i in heavy[:8]] or ["· ninguno"]
+
+    loose = [i for i in items if not i.get("grouped_id") and i.get("urls")]
+    loose.sort(key=lambda i: int(i.get("views") or 0), reverse=True)
+    lines += ["", "Sueltos con link (fuera de álbum)"]
+    lines += [_hit(i, peer, f"{len(i.get('urls') or [])} links") for i in loose[:8]] or ["· ninguno"]
+
+    dup: dict[tuple, dict[str, Any]] = {}
+    for item in items:
+        if item.get("media") != "video":
+            continue
+        size = int(item.get("size") or 0)
+        dur = int(item.get("duration") or 0)
+        if not size or not dur:
+            continue
+        key = ("fid", item["fid"]) if item.get("fid") else ((item.get("mime") or ""), size, dur)
+        slot = dup.get(key)
+        if slot is None:
+            dup[key] = {"n": 1, "item": item}
+        else:
+            slot["n"] += 1
+    groups = sorted((v for v in dup.values() if v["n"] > 1), key=lambda v: v["n"], reverse=True)
+    lines += ["", "Videos repetidos (mismo peso y duración)"]
+    if not groups:
+        lines.append("· ninguno")
+    for group in groups[:8]:
+        item = group["item"]
+        lines.append(_hit(item, peer, f"×{group['n']}"))
+    return _chunks(lines)

@@ -23,7 +23,7 @@ from app.human_read import skewed_delay
 from app.links import check_urls
 from app.pace import WAVE_REST, WAVE_TAKE, parse_amount, pace_for_amount
 from app.scout import ScoutClient, parse_peer
-from app.stats_view import build_stats
+from app.stats_view import build_classifiers, build_stats
 from app.store import Store
 
 store = Store()
@@ -405,6 +405,7 @@ def keyboard(ficha_id: int, summary: dict | None = None) -> InlineKeyboardMarkup
             InlineKeyboardButton("Estadística", callback_data=f"E:{i}"),
             InlineKeyboardButton("Archivos", callback_data=f"A:{i}"),
         ],
+        [InlineKeyboardButton("Clasificar", callback_data=f"C:{i}")],
     ]
     if summary and summary.get("can_continue"):
         rows.extend(_amount_rows(i, first=False))
@@ -429,7 +430,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Los botones agregan mensajes: lo ya visto se queda para scrollear.\n"
         "Todo usa pausas largas; baja el riesgo de flood, no lo elimina.\n"
         "Un canal a la vez. /status te dice si sigue vivo o ya terminó.\n"
-        "/stats lee la última ficha guardada: duración, peso, álbumes y sello por archivo.\n\n"
+        "/stats lee duración, peso total y formatos. /clasificar ordena vistos, compartidos y repetidos.\n\n"
         + extra
     )
 
@@ -461,7 +462,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             f"Última ficha: {last.get('title')} · {s.get('sampled', 0)} posts · {fin}"
         )
     lines.append("Cola: un canal a la vez (misma cuenta). No paralelo.")
-    lines.append("/stats abre la estadística de la última ficha.")
+    lines.append("/stats estadística · /clasificar listas ordenadas.")
     await update.message.reply_text("\n".join(lines))
 
 
@@ -477,6 +478,18 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"Estadística de {ficha.get('title') or ficha.get('peer')} · {len(ficha['items'])} posts en la base."
     )
     await _send_parts(update.message, _stat_parts(ficha, "all"), int(ficha["id"]), summary)
+
+
+async def cmd_classify(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _gate(update):
+        return
+    ficha = store.latest_ficha(update.effective_user.id)
+    if not ficha or not ficha.get("items"):
+        await update.message.reply_text("Todavía no hay una ficha guardada. Mandá un canal primero.")
+        return
+    summary = ficha.get("summary") or {}
+    await update.message.reply_text("Clasifico la última ficha guardada. Empieza por el peso total.")
+    await _send_parts(update.message, build_classifiers(ficha["items"], ficha.get("peer") or "", ficha.get("title") or ""), int(ficha["id"]), summary)
 
 
 def _peer_from_update(update: Update) -> str | None:
@@ -988,11 +1001,14 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             _busy.discard(ficha_id)
         return
 
-    if kind in {"E", "A"}:
+    if kind in {"E", "A", "C"}:
         await q.answer()
-        section = "files" if kind == "A" else "overview"
         await q.message.reply_text("Leo la base guardada. No vuelvo a escanear.")
-        await _send_parts(q.message, _stat_parts(ficha, section), ficha_id, summary)
+        if kind == "C":
+            parts = build_classifiers(ficha["items"], ficha.get("peer") or "", ficha.get("title") or "")
+        else:
+            parts = _stat_parts(ficha, "files" if kind == "A" else "overview")
+        await _send_parts(q.message, parts, ficha_id, summary)
         return
 
     if kind == "U":
@@ -1068,6 +1084,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("stats", cmd_stats))
+    app.add_handler(CommandHandler("clasificar", cmd_classify))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, on_message))
     app.add_error_handler(on_error)
