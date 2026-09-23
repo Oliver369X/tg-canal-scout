@@ -1,6 +1,6 @@
 import unittest
 
-from app.stats_view import build_classifiers, build_stats
+from app.stats_view import build_classifiers, build_stats, query_posts
 
 
 class StatsViewTest(unittest.TestCase):
@@ -56,3 +56,23 @@ class StatsViewTest(unittest.TestCase):
         self.assertIn("Peso total del canal:", classes)
         self.assertIn("Videos repetidos", classes)
         self.assertIn("×2", classes)
+
+    def test_pedir_duracion_menos_y_etiqueta(self):
+        items = [
+            {"id": 1, "media": "video", "duration": 600, "views": 10, "hashtags": ["sofia"]},
+            {"id": 2, "media": "video", "duration": 1200, "views": 50, "hashtags": ["sofia"]},
+            {"id": 3, "media": "video", "duration": 3000, "views": 5, "hashtags": ["otra"]},
+            {"id": 4, "media": "photo", "views": 1, "hashtags": ["Sofia"]},
+        ]
+        page = query_posts(items, "@canal", kind="duracion", min_min=10, max_min=40)
+        text = "\n".join(page["parts"])
+        self.assertEqual(page["total"], 2)
+        self.assertIn("https://t.me/canal/1", text)
+        self.assertNotIn("https://t.me/canal/3", text)
+        menos = "\n".join(query_posts(items, "@canal", kind="menos", limit=1)["parts"])
+        self.assertIn("1-1 de 4", menos)
+        self.assertIn("https://t.me/canal/4", menos)
+        nxt = "\n".join(query_posts(items, "@canal", kind="menos", offset=1, limit=1)["parts"])
+        self.assertIn("2-2 de 4", nxt)
+        tagged = query_posts(items, "@canal", kind="etiqueta", tag="sofia")
+        self.assertEqual(tagged["total"], 3)

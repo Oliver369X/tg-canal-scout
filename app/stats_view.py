@@ -342,4 +342,127 @@ def build_classifiers(items: list[dict[str, Any]], peer: str, title: str = "") -
     for group in groups[:8]:
         item = group["item"]
         lines.append(_hit(item, peer, f"×{group['n']}"))
+    lines += [
+        "",
+        "Para ver más de 8: /pedir vistos 30 · /pedir menos 20",
+        "/pedir duracion 10 40 · /pedir etiqueta nombre · /mas",
+    ]
     return _chunks(lines)
+
+
+def query_posts(
+    items: list[dict[str, Any]],
+    peer: str,
+    *,
+    kind: str,
+    offset: int = 0,
+    limit: int = 10,
+    min_min: int | None = None,
+    max_min: int | None = None,
+    tag: str | None = None,
+) -> dict[str, Any]:
+    limit = max(1, min(int(limit or 10), 40))
+    offset = max(0, int(offset or 0))
+    title = "Lista"
+    picked: list[dict[str, Any]] = []
+
+    if kind == "etiquetas":
+        counts: Counter[str] = Counter()
+        for item in items:
+            for raw in item.get("hashtags") or []:
+                name = str(raw).lstrip("#").lower()
+                if name:
+                    counts[name] += 1
+        rows = counts.most_common()
+        page = rows[offset : offset + limit]
+        lines = [
+            "Etiquetas guardadas",
+            f"{len(rows)} distintas",
+            f"{offset + 1}-{offset + len(page)} de {len(rows)}" if page else f"No hay más. Había {len(rows)}.",
+        ]
+        lines += [f"· #{name} ({n}) · /pedir etiqueta {name}" for name, n in page]
+        if not page:
+            lines.append("· ninguna")
+        elif offset + limit < len(rows):
+            lines.append("Pedí /mas para las siguientes.")
+        else:
+            lines.append("Fin de esta lista.")
+        return {"parts": _chunks(lines), "total": len(rows), "offset": offset, "limit": limit}
+
+    if kind == "duracion":
+        lo_m = int(min_min or 0)
+        hi_m = int(max_min) if max_min is not None else None
+        if hi_m is not None and hi_m < lo_m:
+            lo_m, hi_m = hi_m, lo_m
+        lo = lo_m * 60
+        hi = hi_m * 60 if hi_m is not None else None
+        picked = [
+            i
+            for i in items
+            if i.get("media") == "video"
+            and int(i.get("duration") or 0) >= lo
+            and (hi is None or int(i.get("duration") or 0) <= hi)
+        ]
+        picked.sort(key=lambda i: int(i.get("duration") or 0))
+        title = f"Videos de {lo_m} a {hi_m} min" if hi_m is not None else f"Videos desde {lo_m} min"
+    elif kind == "etiqueta":
+        needle = (tag or "").lstrip("#").lower()
+        picked = [
+            i
+            for i in items
+            if any(str(t).lstrip("#").lower() == needle for t in (i.get("hashtags") or []))
+        ]
+        picked.sort(key=lambda i: int(i.get("views") or 0), reverse=True)
+        title = f"Etiqueta #{needle}"
+    elif kind == "menos":
+        picked = [i for i in items if i.get("views") is not None]
+        picked.sort(key=lambda i: (int(i.get("views") or 0), int(i.get("id") or 0)))
+        title = "Menos vistos"
+    elif kind == "compartidos":
+        picked = _ranked(items, "forwards")
+        title = "Más compartidos"
+    elif kind == "comentarios":
+        picked = _ranked(items, "replies")
+        title = "Más comentarios"
+    elif kind == "reacciones":
+        picked = _ranked(items, "reactions")
+        title = "Más reacciones"
+    else:
+        picked = _ranked(items, "views")
+        title = "Más vistos"
+
+    total = len(picked)
+    page = picked[offset : offset + limit]
+    if page:
+        lines = [title, f"{offset + 1}-{offset + len(page)} de {total}"]
+    else:
+        lines = [title, f"No hay más. Había {total}."]
+    for item in page:
+        lines.append(_hit(item, peer, _query_label(item, kind)))
+    if not page:
+        lines.append("· ninguno con ese filtro")
+    elif offset + limit < total:
+        lines.append("Pedí /mas para los siguientes.")
+    else:
+        lines.append("Fin de esta lista.")
+    return {"parts": _chunks(lines), "total": total, "offset": offset, "limit": limit}
+
+
+def _ranked(items: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
+    picked = [i for i in items if int(i.get(key) or 0) > 0]
+    picked.sort(key=lambda i: int(i.get(key) or 0), reverse=True)
+    return picked
+
+
+def _query_label(item: dict[str, Any], kind: str) -> str:
+    if kind == "menos" or kind == "vistos":
+        return f"{_num(item.get('views'))} vistas · {_mins(item.get('duration'))}"
+    if kind == "compartidos":
+        return f"{_num(item.get('forwards'))} veces"
+    if kind == "comentarios":
+        return f"{_num(item.get('replies'))} respuestas"
+    if kind == "reacciones":
+        return f"{_num(item.get('reactions'))} reacciones"
+    if kind == "duracion":
+        return f"{_mins(item.get('duration'))} · {_num(item.get('views'))} vistas"
+    return f"{_num(item.get('views'))} vistas · {_mins(item.get('duration'))}"
