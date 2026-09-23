@@ -59,186 +59,199 @@ def list_saved() -> dict[str, Any]:
     }
 
 
+def _rows(c: sqlite3.Connection, sql: str, params: tuple = ()) -> list[dict[str, Any]]:
+    return [dict(r) for r in c.execute(sql, params).fetchall()]
+
+
 def deep_stats(ficha_id: int) -> dict[str, Any]:
     if not db_path().exists():
         return {"ok": False, "error": "no hay scout.db"}
-    with _conn() as c:
+    c = sqlite3.connect(db_path(), timeout=60)
+    c.row_factory = sqlite3.Row
+    try:
         row = c.execute(
             "SELECT id, peer, title, length(items_json) AS items_bytes FROM fichas WHERE id=?",
             (ficha_id,),
         ).fetchone()
         if not row:
             return {"ok": False, "error": "ficha no existe"}
+        c.execute("DROP TABLE IF EXISTS scan_flat")
+        c.execute(
+            """
+            CREATE TEMP TABLE scan_flat AS
+            SELECT
+              COALESCE(json_extract(j.value,'$.media'),'empty') AS media,
+              lower(COALESCE(json_extract(j.value,'$.mime'),'')) AS mime,
+              COALESCE(json_extract(j.value,'$.name'),'') AS name,
+              substr(json_extract(j.value,'$.date'),1,7) AS month,
+              CAST(substr(json_extract(j.value,'$.date'),12,2) AS INTEGER) AS hour,
+              COALESCE(json_extract(j.value,'$.duration'),0) AS duration,
+              COALESCE(json_extract(j.value,'$.size'),0) AS size,
+              COALESCE(json_extract(j.value,'$.grouped_id'),0) AS grouped_id
+            FROM fichas f, json_each(f.items_json) j
+            WHERE f.id=?
+            """,
+            (ficha_id,),
+        )
 
-        def grouped(sql: str, limit: int = 40) -> list[dict[str, Any]]:
-            rows = c.execute(sql, (ficha_id, limit)).fetchall()
-            return [dict(r) for r in rows]
+        def top(sql: str, limit: int = 40) -> list[dict[str, Any]]:
+            return _rows(c, sql, (limit,))
 
-        base = "FROM fichas f, json_each(f.items_json) j WHERE f.id=?"
-        media = grouped(
-            f"""
-            SELECT COALESCE(json_extract(j.value,'$.media'),'empty') AS k, count(*) AS n
-            {base}
+        media = top("SELECT media AS k, count(*) AS n FROM scan_flat GROUP BY k ORDER BY n DESC LIMIT ?")
+        mimes = top("SELECT mime AS k, count(*) AS n FROM scan_flat GROUP BY k ORDER BY n DESC LIMIT ?", 80)
+        exts = top(
+            """
+            SELECT
+              CASE
+                WHEN name NOT LIKE '%.%' THEN ''
+                WHEN lower(name) LIKE '%.mp4' THEN 'mp4'
+                WHEN lower(name) LIKE '%.mov' THEN 'mov'
+                WHEN lower(name) LIKE '%.mkv' THEN 'mkv'
+                WHEN lower(name) LIKE '%.webm' THEN 'webm'
+                WHEN lower(name) LIKE '%.jpg' OR lower(name) LIKE '%.jpeg' THEN 'jpg'
+                WHEN lower(name) LIKE '%.png' THEN 'png'
+                WHEN lower(name) LIKE '%.webp' THEN 'webp'
+                WHEN lower(name) LIKE '%.gif' THEN 'gif'
+                ELSE 'otro'
+              END AS k,
+              count(*) AS n
+            FROM scan_flat
             GROUP BY k ORDER BY n DESC LIMIT ?
             """
         )
-        mimes = grouped(
-            f"""
-            SELECT lower(COALESCE(json_extract(j.value,'$.mime'),'')) AS k, count(*) AS n
-            {base}
-            GROUP BY k ORDER BY n DESC LIMIT ?
-            """,
-            80,
-        )
-        exts = grouped(
-            f"""
-            SELECT lower(
-              CASE
-                WHEN instr(COALESCE(json_extract(j.value,'$.name'),''), '.') = 0 THEN ''
-                ELSE substr(
-                  json_extract(j.value,'$.name'),
-                  length(json_extract(j.value,'$.name'))
-                    - instr(reverse(json_extract(j.value,'$.name')), '.') + 2
-                )
-              END
-            ) AS k, count(*) AS n
-            {base}
-            GROUP BY k ORDER BY n DESC LIMIT ?
-            """,
-            40,
-        )
-        months = grouped(
-            f"""
-            SELECT substr(json_extract(j.value,'$.date'),1,7) AS k, count(*) AS n
-            {base}
-            GROUP BY k ORDER BY k LIMIT ?
-            """,
-            120,
-        )
-        hours = grouped(
-            f"""
-            SELECT CAST(substr(json_extract(j.value,'$.date'),12,2) AS INTEGER) AS k, count(*) AS n
-            {base}
-            GROUP BY k ORDER BY k LIMIT ?
-            """,
-            30,
-        )
-        dur = grouped(
-            f"""
+        months = top("SELECT month AS k, count(*) AS n FROM scan_flat GROUP BY k ORDER BY k LIMIT ?", 120)
+        hours = top("SELECT hour AS k, count(*) AS n FROM scan_flat GROUP BY k ORDER BY k LIMIT ?", 30)
+        dur = top(
+            """
             SELECT
               CASE
-                WHEN COALESCE(json_extract(j.value,'$.duration'),0) = 0 THEN 'sin duracion'
-                WHEN json_extract(j.value,'$.duration') < 60 THEN '<1 min'
-                WHEN json_extract(j.value,'$.duration') < 600 THEN '1-10 min'
-                WHEN json_extract(j.value,'$.duration') < 1800 THEN '10-30 min'
-                WHEN json_extract(j.value,'$.duration') < 3600 THEN '30-60 min'
+                WHEN duration = 0 THEN 'sin duracion'
+                WHEN duration < 60 THEN '<1 min'
+                WHEN duration < 600 THEN '1-10 min'
+                WHEN duration < 1800 THEN '10-30 min'
+                WHEN duration < 3600 THEN '30-60 min'
                 ELSE '>=60 min'
               END AS k,
               count(*) AS n
-            {base}
+            FROM scan_flat
             GROUP BY k LIMIT ?
             """
         )
-        sizes = grouped(
-            f"""
+        sizes = top(
+            """
             SELECT
               CASE
-                WHEN COALESCE(json_extract(j.value,'$.size'),0) = 0 THEN 'sin peso'
-                WHEN json_extract(j.value,'$.size') < 1048576 THEN '<1 MB'
-                WHEN json_extract(j.value,'$.size') < 10485760 THEN '1-10 MB'
-                WHEN json_extract(j.value,'$.size') < 104857600 THEN '10-100 MB'
-                WHEN json_extract(j.value,'$.size') < 524288000 THEN '100-500 MB'
+                WHEN size = 0 THEN 'sin peso'
+                WHEN size < 1048576 THEN '<1 MB'
+                WHEN size < 10485760 THEN '1-10 MB'
+                WHEN size < 104857600 THEN '10-100 MB'
+                WHEN size < 524288000 THEN '100-500 MB'
                 ELSE '>=500 MB'
               END AS k,
               count(*) AS n
-            {base}
+            FROM scan_flat
             GROUP BY k LIMIT ?
             """
         )
-        dup_names = grouped(
+        generic = ("", "video.mp4", "photo.jpg", "document.mp4", "animation.gif", "sticker.webp")
+        placeholders = ",".join("?" * len(generic))
+        dup_names = _rows(
+            c,
             f"""
-            SELECT json_extract(j.value,'$.name') AS k, count(*) AS n
-            {base}
-              AND COALESCE(json_extract(j.value,'$.name'),'') != ''
-            GROUP BY k
+            SELECT name AS k, count(*) AS n
+            FROM scan_flat
+            WHERE name != '' AND lower(name) NOT IN ({placeholders})
+            GROUP BY name
             HAVING n > 1
             ORDER BY n DESC
-            LIMIT ?
+            LIMIT 25
             """,
-            25,
+            tuple(generic),
         )
-        dup_files = grouped(
+        dup_name_count = dict(
+            c.execute(
+                f"""
+                SELECT count(*) AS groups, COALESCE(sum(n),0) AS posts
+                FROM (
+                  SELECT count(*) AS n
+                  FROM scan_flat
+                  WHERE name != '' AND lower(name) NOT IN ({placeholders})
+                  GROUP BY name
+                  HAVING n > 1
+                )
+                """,
+                tuple(generic),
+            ).fetchone()
+        )
+        generic_names = _rows(
+            c,
             f"""
-            SELECT
-              json_extract(j.value,'$.mime') AS mime,
-              json_extract(j.value,'$.size') AS size,
-              json_extract(j.value,'$.duration') AS duration,
-              count(*) AS n
-            {base}
-              AND COALESCE(json_extract(j.value,'$.size'),0) > 0
+            SELECT lower(name) AS k, count(*) AS n
+            FROM scan_flat
+            WHERE lower(name) IN ({placeholders})
+            GROUP BY k ORDER BY n DESC
+            """,
+            tuple(g for g in generic if g),
+        )
+        dup_files = _rows(
+            c,
+            """
+            SELECT mime, size, duration, count(*) AS n
+            FROM scan_flat
+            WHERE size > 0
             GROUP BY mime, size, duration
             HAVING n > 1
             ORDER BY n DESC
-            LIMIT ?
+            LIMIT 15
             """,
-            25,
         )
-        dup_name_count = c.execute(
-            f"""
-            SELECT count(*) AS groups, COALESCE(sum(n),0) AS posts
-            FROM (
-              SELECT count(*) AS n
-              {base}
-                AND COALESCE(json_extract(j.value,'$.name'),'') != ''
-              GROUP BY json_extract(j.value,'$.name')
-              HAVING n > 1
-            )
-            """,
-            (ficha_id,),
-        ).fetchone()
-        dup_file_count = c.execute(
-            f"""
-            SELECT count(*) AS groups, COALESCE(sum(n),0) AS posts
-            FROM (
-              SELECT count(*) AS n
-              {base}
-                AND COALESCE(json_extract(j.value,'$.size'),0) > 0
-              GROUP BY json_extract(j.value,'$.mime'),
-                       json_extract(j.value,'$.size'),
-                       json_extract(j.value,'$.duration')
-              HAVING n > 1
-            )
-            """,
-            (ficha_id,),
-        ).fetchone()
-        named = c.execute(
-            f"""
-            SELECT
-              sum(CASE WHEN COALESCE(json_extract(j.value,'$.name'),'') != '' THEN 1 ELSE 0 END) AS with_name,
-              sum(CASE WHEN COALESCE(json_extract(j.value,'$.size'),0) > 0 THEN 1 ELSE 0 END) AS with_size,
-              sum(CASE WHEN COALESCE(json_extract(j.value,'$.duration'),0) > 0 THEN 1 ELSE 0 END) AS with_duration,
-              count(*) AS posts
-            {base}
-            """,
-            (ficha_id,),
-        ).fetchone()
-
-    return {
-        "ok": True,
-        "id": row["id"],
-        "peer": row["peer"],
-        "title": row["title"],
-        "items_bytes": row["items_bytes"],
-        "coverage": dict(named) if named else {},
-        "media": media,
-        "mimes": mimes,
-        "extensions": exts,
-        "months": months,
-        "hours_utc": hours,
-        "duration_buckets": dur,
-        "size_buckets": sizes,
-        "duplicate_names_top": dup_names,
-        "duplicate_name_groups": dict(dup_name_count) if dup_name_count else {},
-        "duplicate_same_file_top": dup_files,
-        "duplicate_file_groups": dict(dup_file_count) if dup_file_count else {},
-    }
+        dup_file_count = dict(
+            c.execute(
+                """
+                SELECT count(*) AS groups, COALESCE(sum(n),0) AS posts
+                FROM (
+                  SELECT count(*) AS n
+                  FROM scan_flat
+                  WHERE size > 0
+                  GROUP BY mime, size, duration
+                  HAVING n > 1
+                )
+                """
+            ).fetchone()
+        )
+        named = dict(
+            c.execute(
+                """
+                SELECT
+                  sum(CASE WHEN name != '' THEN 1 ELSE 0 END) AS with_name,
+                  sum(CASE WHEN size > 0 THEN 1 ELSE 0 END) AS with_size,
+                  sum(CASE WHEN duration > 0 THEN 1 ELSE 0 END) AS with_duration,
+                  sum(CASE WHEN grouped_id != 0 THEN 1 ELSE 0 END) AS in_album,
+                  count(DISTINCT CASE WHEN grouped_id != 0 THEN grouped_id END) AS albums,
+                  count(*) AS posts
+                FROM scan_flat
+                """
+            ).fetchone()
+        )
+        return {
+            "ok": True,
+            "id": row["id"],
+            "peer": row["peer"],
+            "title": row["title"],
+            "items_bytes": row["items_bytes"],
+            "coverage": named,
+            "media": media,
+            "mimes": mimes,
+            "extensions": exts,
+            "months": months,
+            "hours_utc": hours,
+            "duration_buckets": dur,
+            "size_buckets": sizes,
+            "generic_names": generic_names,
+            "duplicate_names_top": dup_names,
+            "duplicate_name_groups": dup_name_count,
+            "duplicate_same_file_top": dup_files,
+            "duplicate_file_groups": dup_file_count,
+        }
+    finally:
+        c.close()
