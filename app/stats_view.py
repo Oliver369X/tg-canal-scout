@@ -1,6 +1,7 @@
 """Estadística y sello por archivo, leídos de los posts ya guardados."""
 from __future__ import annotations
 
+import re
 from collections import Counter
 from typing import Any
 
@@ -344,10 +345,138 @@ def build_classifiers(items: list[dict[str, Any]], peer: str, title: str = "") -
         lines.append(_hit(item, peer, f"×{group['n']}"))
     lines += [
         "",
-        "Para ver más de 8: /pedir vistos 30 · /pedir menos 20",
-        "/pedir duracion 10 40 · /pedir etiqueta nombre · /mas",
+        "Para ver más, sin espacios: /pedirvistos30 · /pedirmenos20 · /pedirduracion10-40 · /mas",
     ]
     return _chunks(lines)
+
+
+_ALIASES = {
+    "vistos": "vistos",
+    "visto": "vistos",
+    "masvistos": "vistos",
+    "másvistos": "vistos",
+    "menos": "menos",
+    "menosvistos": "menos",
+    "menosvisto": "menos",
+    "compartidos": "compartidos",
+    "reenvios": "compartidos",
+    "reenvíos": "compartidos",
+    "comentarios": "comentarios",
+    "respuestas": "comentarios",
+    "reacciones": "reacciones",
+    "duracion": "duracion",
+    "duración": "duracion",
+    "minutos": "duracion",
+    "etiqueta": "etiqueta",
+    "tag": "etiqueta",
+    "hashtag": "etiqueta",
+    "etiquetas": "etiquetas",
+    "tags": "etiquetas",
+}
+
+_GLUED = (
+    ("etiquetas", re.compile(r"^eti(?:qu|k)etas$")),
+    ("duracion", re.compile(r"^duracion(\d+)(?:a|-)(\d+)(?:(?:a|-)(\d+))?$")),
+    ("etiqueta", re.compile(r"^eti(?:qu|k)eta([a-z0-9_]+?)(?:-(\d+))?$")),
+    ("vistos", re.compile(r"^(?:mas)?visto?s?(\d+)?$")),
+    ("menos", re.compile(r"^menos(?:visto?s?)?(\d+)?$")),
+    ("compartidos", re.compile(r"^compartidos(\d+)?$")),
+    ("comentarios", re.compile(r"^comentarios(\d+)?$")),
+    ("reacciones", re.compile(r"^reacciones(\d+)?$")),
+)
+
+
+def parse_pedir_args(args: list[str]) -> dict[str, Any] | None:
+    if not args:
+        return None
+    word = args[0].lower().lstrip("/")
+    rest = args[1:]
+    nums: list[int] = []
+    words: list[str] = []
+    for raw in rest:
+        piece = raw.lstrip("#")
+        if piece.isdigit():
+            nums.append(int(piece))
+        elif piece:
+            words.append(piece)
+    kind = _ALIASES.get(word)
+    if not kind:
+        return None
+    limit = 10
+    min_min = None
+    max_min = None
+    tag = None
+    if kind == "duracion":
+        if not nums:
+            return None
+        min_min = nums[0]
+        max_min = nums[1] if len(nums) > 1 else None
+        if len(nums) > 2:
+            limit = nums[2]
+    elif kind == "etiqueta":
+        if not words:
+            return None
+        tag = words[0]
+        if nums:
+            limit = nums[0]
+    elif kind != "etiquetas" and nums:
+        limit = nums[0]
+    return {"kind": kind, "offset": 0, "limit": limit, "min_min": min_min, "max_min": max_min, "tag": tag}
+
+
+def _parse_glued(body: str) -> dict[str, Any] | None:
+    for kind, rx in _GLUED:
+        match = rx.match(body)
+        if not match:
+            continue
+        if kind == "etiquetas":
+            return {"kind": kind, "offset": 0, "limit": 10, "min_min": None, "max_min": None, "tag": None}
+        if kind == "duracion":
+            return {
+                "kind": kind,
+                "offset": 0,
+                "limit": int(match.group(3) or 10),
+                "min_min": int(match.group(1)),
+                "max_min": int(match.group(2)),
+                "tag": None,
+            }
+        if kind == "etiqueta":
+            return {
+                "kind": kind,
+                "offset": 0,
+                "limit": int(match.group(2) or 10),
+                "min_min": None,
+                "max_min": None,
+                "tag": match.group(1),
+            }
+        return {
+            "kind": kind,
+            "offset": 0,
+            "limit": int(match.group(1) or 10),
+            "min_min": None,
+            "max_min": None,
+            "tag": None,
+        }
+    return None
+
+
+def parse_pedir_text(text: str) -> dict[str, Any] | None:
+    raw = (text or "").strip()
+    if not raw.startswith("/"):
+        return None
+    parts = raw.split()
+    head = parts[0].split("@", 1)[0][1:].lower()
+    tail = parts[1:]
+    if head in {"mas", "más"}:
+        limit = int(tail[0]) if tail and tail[0].isdigit() else None
+        return {"mas": True, "limit": limit}
+    if head == "pedir":
+        return parse_pedir_args(tail)
+    if head.startswith("pedir_"):
+        return parse_pedir_args([p for p in head[6:].split("_") if p] + tail)
+    if head.startswith("pedir"):
+        return _parse_glued(head[5:])
+    return None
 
 
 def query_posts(

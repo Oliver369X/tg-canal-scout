@@ -23,7 +23,7 @@ from app.human_read import skewed_delay
 from app.links import check_urls
 from app.pace import WAVE_REST, WAVE_TAKE, parse_amount, pace_for_amount
 from app.scout import ScoutClient, parse_peer
-from app.stats_view import build_classifiers, build_stats, query_posts
+from app.stats_view import build_classifiers, build_stats, parse_pedir_text, query_posts
 from app.store import Store
 
 store = Store()
@@ -479,18 +479,18 @@ Ficha, Tipos, Videos largos, Pesados, Más vistos, Links, Más viejos, Reenvíos
 /stats — peso total, formatos, duración, álbumes
 /clasificar — vistos, compartidos, comentarios, reacciones, cortos, largos, repetidos
 
-/pedir vistos 30 — los 30 con más vistas
-/pedir menos 20 — los 20 con menos vistas
-/pedir compartidos 15
-/pedir comentarios 15
-/pedir reacciones 15
-/pedir duracion 10 40 — videos de 10 a 40 minutos
-/pedir duracion 10 40 25 — ese rango, 25 resultados
-/pedir etiquetas — hashtags y cuántas veces salen
-/pedir etiqueta nombre 20 — posts con esa etiqueta
-/mas — la página siguiente (hasta 40 por página)
+/pedirvistos30 — 30 con más vistas, sin espacios
+/pedirmenos20 — 20 con menos vistas
+/pedircompartidos15
+/pedircomentarios15
+/pedirreacciones15
+/pedirduracion10-40 — videos de 10 a 40 minutos
+/pediretiketas — hashtags
+/pediretiketanombre-20 — posts con esa etiqueta
+/mas — página siguiente
 
-No vuelve a escanear el canal. Lee lo ya guardado."""
+Con espacios también: /pedir vistos 30
+Cada página trae hasta 40. No vuelve a escanear."""
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -526,77 +526,22 @@ async def cmd_classify(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 _PEDIR_HELP = (
-    "Pedí sobre la última ficha guardada:\n"
-    "/pedir vistos 30\n"
-    "/pedir menos 20\n"
-    "/pedir compartidos 15\n"
-    "/pedir comentarios 15\n"
-    "/pedir reacciones 15\n"
-    "/pedir duracion 10 40\n"
-    "/pedir duracion 10 40 25\n"
-    "/pedir etiqueta nombre 20\n"
-    "/pedir etiquetas\n"
-    "/mas sigue la lista. Cada página trae hasta 40."
+    "Sin espacios, todo junto:\n"
+    "/pedirvistos30\n"
+    "/pedirmenos20\n"
+    "/pedircompartidos15\n"
+    "/pedircomentarios15\n"
+    "/pedirreacciones15\n"
+    "/pedirduracion10-40\n"
+    "/pediretiketas\n"
+    "/pediretiketasofia-20\n"
+    "/mas\n"
+    "También vale con espacios: /pedir vistos 30"
 )
 
 
 def _parse_pedir(args: list[str]) -> dict | None:
-    if not args:
-        return None
-    word = args[0].lower().lstrip("/")
-    rest = args[1:]
-    nums: list[int] = []
-    words: list[str] = []
-    for raw in rest:
-        piece = raw.lstrip("#")
-        if piece.isdigit():
-            nums.append(int(piece))
-        elif piece:
-            words.append(piece)
-    aliases = {
-        "vistos": "vistos",
-        "masvistos": "vistos",
-        "másvistos": "vistos",
-        "menos": "menos",
-        "menosvistos": "menos",
-        "compartidos": "compartidos",
-        "reenvios": "compartidos",
-        "reenvíos": "compartidos",
-        "comentarios": "comentarios",
-        "respuestas": "comentarios",
-        "reacciones": "reacciones",
-        "duracion": "duracion",
-        "duración": "duracion",
-        "minutos": "duracion",
-        "etiqueta": "etiqueta",
-        "tag": "etiqueta",
-        "hashtag": "etiqueta",
-        "etiquetas": "etiquetas",
-        "tags": "etiquetas",
-    }
-    kind = aliases.get(word)
-    if not kind:
-        return None
-    limit = 10
-    min_min = None
-    max_min = None
-    tag = None
-    if kind == "duracion":
-        if not nums:
-            return None
-        min_min = nums[0]
-        max_min = nums[1] if len(nums) > 1 else None
-        if len(nums) > 2:
-            limit = nums[2]
-    elif kind == "etiqueta":
-        if not words:
-            return None
-        tag = words[0]
-        if nums:
-            limit = nums[0]
-    elif kind != "etiquetas" and nums:
-        limit = nums[0]
-    return {"kind": kind, "offset": 0, "limit": limit, "min_min": min_min, "max_min": max_min, "tag": tag}
+    return parse_pedir_text("/pedir " + " ".join(args)) if args else None
 
 
 async def _run_query(update: Update, spec: dict) -> None:
@@ -623,30 +568,36 @@ async def _run_query(update: Update, spec: dict) -> None:
     await _send_parts(update.message, result["parts"], int(ficha["id"]), summary)
 
 
-async def cmd_pedir(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def on_query_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await _gate(update):
         return
-    spec = _parse_pedir(list(context.args or []))
-    if not spec:
+    parsed = parse_pedir_text(update.message.text or "")
+    if not parsed:
         await update.message.reply_text(_PEDIR_HELP)
         return
-    await _run_query(update, spec)
+    if parsed.get("mas"):
+        prev = _last_query.get(update.effective_user.id)
+        if not prev:
+            await update.message.reply_text("Todavía no hay una lista. Probá /pedirvistos20")
+            return
+        spec = dict(prev)
+        prev_limit = int(spec.get("limit") or 10)
+        spec["offset"] = int(spec.get("offset") or 0) + prev_limit
+        if parsed.get("limit"):
+            spec["limit"] = int(parsed["limit"])
+        await update.message.reply_text("Sigo con la página siguiente…")
+        await _run_query(update, spec)
+        return
+    await update.message.reply_text("Busco en la ficha guardada…")
+    await _run_query(update, parsed)
+
+
+async def cmd_pedir(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await on_query_command(update, context)
 
 
 async def cmd_mas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _gate(update):
-        return
-    prev = _last_query.get(update.effective_user.id)
-    if not prev:
-        await update.message.reply_text("Todavía no hay una lista. Probá /pedir vistos 20")
-        return
-    spec = dict(prev)
-    prev_limit = int(spec.get("limit") or 10)
-    spec["offset"] = int(spec.get("offset") or 0) + prev_limit
-    extra = list(context.args or [])
-    if extra and extra[0].isdigit():
-        spec["limit"] = int(extra[0])
-    await _run_query(update, spec)
+    await on_query_command(update, context)
 
 
 def _peer_from_update(update: Update) -> str | None:
@@ -1257,6 +1208,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("clasificar", cmd_classify))
+    app.add_handler(MessageHandler(filters.Regex(r"(?i)^/(pedir|mas|más)"), on_query_command))
     app.add_handler(CommandHandler("pedir", cmd_pedir))
     app.add_handler(CommandHandler("mas", cmd_mas))
     app.add_handler(CallbackQueryHandler(on_callback))
